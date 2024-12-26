@@ -14,7 +14,8 @@ class StudentScreen extends ConsumerStatefulWidget {
 }
 
 class _StudentScreenState extends ConsumerState<StudentScreen> {
-  List<StudyRecord> _records = [];
+  List<StudyRecord> _weeklyRecords = [];
+  List<StudyRecord> _monthlyRecords = [];
   DateTime _focusedDay = DateTime.now();
   DateTime _selectedDay = DateTime.now();
   CalendarFormat _calendarFormat = CalendarFormat.month;
@@ -30,22 +31,56 @@ class _StudentScreenState extends ConsumerState<StudentScreen> {
     final user = ref.read(currentUserProvider);
     if (user == null || user.id == null) return;
 
-    final startDate = DateTime(_focusedDay.year, _focusedDay.month, 1);
-    final endDate = DateTime(_focusedDay.year, _focusedDay.month + 1, 0);
+    // Haftalık kayıtlar için
+    final now = DateTime.now();
+    // Pazartesi gününü bul (1 = Pazartesi, 7 = Pazar)
+    final weekStartDate = now.subtract(Duration(days: now.weekday - 1));
+    final weekEndDate = weekStartDate.add(const Duration(days: 6));
 
-    final records = await ref.read(studyControllerProvider).getStudentRecords(
+    final weeklyRecords = await ref
+        .read(studyControllerProvider)
+        .getStudentRecords(
           user.id!,
-          startDate: startDate,
-          endDate: endDate,
+          startDate: DateTime(
+              weekStartDate.year, weekStartDate.month, weekStartDate.day),
+          endDate: DateTime(
+              weekEndDate.year, weekEndDate.month, weekEndDate.day, 23, 59, 59),
         );
 
+    // Aylık kayıtlar için
+    final monthStartDate = DateTime(now.year, now.month, 1);
+    final monthEndDate = DateTime(now.year, now.month + 1, 0, 23, 59, 59);
+
+    final monthlyRecords =
+        await ref.read(studyControllerProvider).getStudentRecords(
+              user.id!,
+              startDate: monthStartDate,
+              endDate: monthEndDate,
+            );
+
     setState(() {
-      _records = records;
+      _weeklyRecords = weeklyRecords;
+      _monthlyRecords = monthlyRecords;
     });
+
+    print('Haftalık kayıt sayısı: ${_weeklyRecords.length}');
+    print('Aylık kayıt sayısı: ${_monthlyRecords.length}');
+
+    // Haftalık kayıtların tarihlerini yazdır
+    for (var record in _weeklyRecords) {
+      print(
+          'Haftalık kayıt: ${DateFormat('dd.MM.yyyy').format(record.studyDate)}');
+    }
+
+    // Aylık kayıtların tarihlerini yazdır
+    for (var record in _monthlyRecords) {
+      print(
+          'Aylık kayıt: ${DateFormat('dd.MM.yyyy').format(record.studyDate)}');
+    }
   }
 
   bool _hasStudiedOnDay(DateTime day) {
-    return _records.any((record) =>
+    return _monthlyRecords.any((record) =>
         record.studyDate.year == day.year &&
         record.studyDate.month == day.month &&
         record.studyDate.day == day.day);
@@ -67,7 +102,7 @@ class _StudentScreenState extends ConsumerState<StudentScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        backgroundColor: colorScheme.primary,
+        backgroundColor: const Color(0xFFE67817),
         title: Text(
           'Hoş geldin, ${user.name}',
           style: const TextStyle(
@@ -90,7 +125,7 @@ class _StudentScreenState extends ConsumerState<StudentScreen> {
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
             colors: [
-              colorScheme.primary.withOpacity(0.05),
+              const Color(0xFFE67817).withOpacity(0.05),
               Colors.white,
             ],
           ),
@@ -108,13 +143,13 @@ class _StudentScreenState extends ConsumerState<StudentScreen> {
                       Container(
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
-                          color: colorScheme.primary.withOpacity(0.1),
+                          color: const Color(0xFFE67817).withOpacity(0.1),
                           shape: BoxShape.circle,
                         ),
-                        child: Icon(
+                        child: const Icon(
                           Icons.school_rounded,
                           size: 40,
-                          color: colorScheme.primary,
+                          color: Color(0xFFE67817),
                         ),
                       ),
                       const SizedBox(height: 20),
@@ -145,6 +180,7 @@ class _StudentScreenState extends ConsumerState<StudentScreen> {
                             horizontal: 24,
                             vertical: 12,
                           ),
+                          backgroundColor: const Color(0xFFE67817),
                         ),
                         onPressed: () async {
                           final result = await ref
@@ -169,12 +205,14 @@ class _StudentScreenState extends ConsumerState<StudentScreen> {
                             },
                           ).show();
                         },
-                        icon: const Icon(Icons.check_circle_rounded),
+                        icon: const Icon(Icons.check_circle_rounded,
+                            color: Colors.white),
                         label: const Text(
                           'Çalıştım',
                           style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.bold,
+                            color: Colors.white,
                           ),
                         ),
                       ),
@@ -189,53 +227,161 @@ class _StudentScreenState extends ConsumerState<StudentScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
-                      Text(
-                        'Bu Ay Toplam Çalışma',
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          color: colorScheme.onSurface,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 12,
-                        ),
-                        decoration: BoxDecoration(
-                          color: colorScheme.primary.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.calendar_month_rounded,
-                              size: 28,
-                              color: colorScheme.primary,
-                            ),
-                            const SizedBox(width: 12),
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  '${_records.length} gün',
-                                  style: theme.textTheme.titleLarge?.copyWith(
-                                    color: colorScheme.primary,
-                                    fontWeight: FontWeight.bold,
-                                  ),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          // Haftalık çalışma
+                          Column(
+                            children: [
+                              Text(
+                                'Bu Hafta',
+                                style: theme.textTheme.titleMedium?.copyWith(
+                                  color: colorScheme.onSurface,
                                 ),
-                                Text(
-                                  'çalışma yaptın',
-                                  style: theme.textTheme.titleSmall?.copyWith(
-                                    color: colorScheme.primary.withOpacity(0.8),
-                                  ),
+                              ),
+                              const SizedBox(height: 12),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 20,
+                                  vertical: 12,
                                 ),
-                              ],
-                            ),
-                          ],
-                        ),
+                                decoration: BoxDecoration(
+                                  color:
+                                      const Color(0xFFE67817).withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      Icons.calendar_today_rounded,
+                                      size: 28,
+                                      color: const Color(0xFFE67817),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          '${_weeklyRecords.length} gün',
+                                          style: theme.textTheme.titleLarge
+                                              ?.copyWith(
+                                            color: const Color(0xFFE67817),
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                        Text(
+                                          'çalışma yaptın',
+                                          style: theme.textTheme.titleSmall
+                                              ?.copyWith(
+                                            color: const Color(0xFFE67817)
+                                                .withOpacity(0.8),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          // Aylık çalışma
+                          Column(
+                            children: [
+                              Text(
+                                'Bu Ay',
+                                style: theme.textTheme.titleMedium?.copyWith(
+                                  color: colorScheme.onSurface,
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 20,
+                                  vertical: 12,
+                                ),
+                                decoration: BoxDecoration(
+                                  color:
+                                      const Color(0xFFE67817).withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      Icons.calendar_month_rounded,
+                                      size: 28,
+                                      color: const Color(0xFFE67817),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          '${_monthlyRecords.length} gün',
+                                          style: theme.textTheme.titleLarge
+                                              ?.copyWith(
+                                            color: const Color(0xFFE67817),
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                        Text(
+                                          'çalışma yaptın',
+                                          style: theme.textTheme.titleSmall
+                                              ?.copyWith(
+                                            color: const Color(0xFFE67817)
+                                                .withOpacity(0.8),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                       ),
+                      if (_weeklyRecords.length >= 5) ...[
+                        const SizedBox(height: 16),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 12,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.green.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(
+                              color: Colors.green.withOpacity(0.3),
+                              width: 1,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Icon(
+                                Icons.emoji_events_rounded,
+                                color: Colors.green,
+                                size: 24,
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                'Tebrikler! Bu hafta ${_weeklyRecords.length} gün çalıştığınız için +5 puan aldınız!',
+                                style: const TextStyle(
+                                  color: Colors.green,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -262,7 +408,7 @@ class _StudentScreenState extends ConsumerState<StudentScreen> {
                               vertical: 6,
                             ),
                             decoration: BoxDecoration(
-                              color: colorScheme.primary.withOpacity(0.1),
+                              color: const Color(0xFFE67817).withOpacity(0.1),
                               borderRadius: BorderRadius.circular(16),
                             ),
                             child: Row(
@@ -271,7 +417,7 @@ class _StudentScreenState extends ConsumerState<StudentScreen> {
                                 Icon(
                                   Icons.calendar_today_rounded,
                                   size: 16,
-                                  color: colorScheme.primary,
+                                  color: const Color(0xFFE67817),
                                 ),
                                 const SizedBox(width: 6),
                                 Text(
@@ -279,7 +425,7 @@ class _StudentScreenState extends ConsumerState<StudentScreen> {
                                       .format(_focusedDay),
                                   style: TextStyle(
                                     fontSize: 14,
-                                    color: colorScheme.primary,
+                                    color: const Color(0xFFE67817),
                                     fontWeight: FontWeight.bold,
                                   ),
                                 ),
@@ -312,6 +458,11 @@ class _StudentScreenState extends ConsumerState<StudentScreen> {
                           _focusedDay = focusedDay;
                           _loadRecords();
                         },
+                        availableCalendarFormats: const {
+                          CalendarFormat.month: 'Hafta',
+                          CalendarFormat.twoWeeks: 'Ay',
+                          CalendarFormat.week: '2 Hafta',
+                        },
                         calendarStyle: CalendarStyle(
                           outsideDaysVisible: true,
                           weekendTextStyle: TextStyle(color: colorScheme.error),
@@ -331,19 +482,19 @@ class _StudentScreenState extends ConsumerState<StudentScreen> {
                             fontSize: 14,
                           ),
                           todayTextStyle: TextStyle(
-                            color: colorScheme.primary,
+                            color: const Color(0xFFE67817),
                             fontWeight: FontWeight.bold,
                             fontSize: 14,
                           ),
                           selectedDecoration: BoxDecoration(
-                            color: colorScheme.primary,
+                            color: const Color(0xFFE67817),
                             shape: BoxShape.circle,
                           ),
                           todayDecoration: BoxDecoration(
-                            color: colorScheme.primary.withOpacity(0.1),
+                            color: const Color(0xFFE67817).withOpacity(0.1),
                             shape: BoxShape.circle,
                             border: Border.all(
-                              color: colorScheme.primary,
+                              color: const Color(0xFFE67817),
                               width: 1,
                             ),
                           ),
@@ -359,12 +510,12 @@ class _StudentScreenState extends ConsumerState<StudentScreen> {
                             fontWeight: FontWeight.bold,
                           ),
                           formatButtonTextStyle: TextStyle(
-                            color: colorScheme.primary,
+                            color: const Color(0xFFE67817),
                             fontWeight: FontWeight.bold,
                             fontSize: 14,
                           ),
                           formatButtonDecoration: BoxDecoration(
-                            color: colorScheme.primary.withOpacity(0.1),
+                            color: const Color(0xFFE67817).withOpacity(0.1),
                             borderRadius: BorderRadius.circular(12),
                           ),
                         ),

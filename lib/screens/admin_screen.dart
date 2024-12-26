@@ -1,11 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
-import 'package:excel/excel.dart' hide Border, Color, TextSpan;
 import 'package:file_picker/file_picker.dart';
 import 'package:awesome_dialog/awesome_dialog.dart';
 import 'package:flutter_expandable_fab/flutter_expandable_fab.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
+import 'dart:typed_data';
+import 'dart:html' as html;
+import 'dart:convert';
 import 'dart:io';
 import '../providers/app_provider.dart';
 import '../widgets/custom_text_field.dart';
@@ -26,6 +31,158 @@ class AdminScreen extends ConsumerWidget {
       current = current.add(const Duration(days: 1));
     }
     return days;
+  }
+
+  Future<Uint8List> _generateStudentReport({
+    required List<AppUser> students,
+    required List<StudyRecord> records,
+    required DateTime startDate,
+    required DateTime endDate,
+    required String className,
+    required String section,
+  }) async {
+    // Türkçe karakterleri destekleyen font yükle
+    final font = await PdfGoogleFonts.nunitoRegular();
+    final boldFont = await PdfGoogleFonts.nunitoBold();
+
+    final pdf = pw.Document();
+    final days = _getDaysBetween(startDate, endDate);
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4.landscape,
+        theme: pw.ThemeData.withFont(
+          base: font,
+          bold: boldFont,
+        ),
+        build: (pw.Context context) {
+          return [
+            pw.Header(
+              level: 0,
+              child: pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                  pw.Text(
+                    'Ogrenci Calisma Raporu',
+                    style: pw.TextStyle(
+                      font: boldFont,
+                      fontSize: 24,
+                    ),
+                  ),
+                  pw.SizedBox(height: 8),
+                  pw.Text(
+                    'Sinif: $className-$section',
+                    style: pw.TextStyle(font: font, fontSize: 14),
+                  ),
+                  pw.Text(
+                    'Tarih Araligi: ${DateFormat('dd.MM.yyyy').format(startDate)} - ${DateFormat('dd.MM.yyyy').format(endDate)}',
+                    style: pw.TextStyle(font: font, fontSize: 14),
+                  ),
+                ],
+              ),
+            ),
+            pw.SizedBox(height: 20),
+            pw.Table.fromTextArray(
+              context: context,
+              headerStyle: pw.TextStyle(
+                font: boldFont,
+                color: PdfColors.white,
+              ),
+              headerDecoration: const pw.BoxDecoration(
+                color: PdfColors.blueGrey800,
+              ),
+              cellHeight: 30,
+              cellStyle: pw.TextStyle(
+                font: font,
+                fontSize: 12,
+              ),
+              cellAlignments: {
+                0: pw.Alignment.centerLeft,
+                1: pw.Alignment.center,
+                2: pw.Alignment.center,
+              },
+              headerPadding: const pw.EdgeInsets.all(8),
+              cellPadding: const pw.EdgeInsets.all(8),
+              data: <List<String>>[
+                // Başlık satırı
+                <String>[
+                  'Ogrenci',
+                  'Okul No',
+                  'Toplam',
+                  ...days.map((day) => DateFormat('dd.MM').format(day)),
+                ],
+                // Veri satırları
+                ...students.map((student) {
+                  final studentRecords =
+                      records.where((r) => r.studentId == student.id).toList();
+
+                  final dailyStatus = days.map((day) {
+                    final hasStudied = studentRecords.any((record) =>
+                        record.studyDate.year == day.year &&
+                        record.studyDate.month == day.month &&
+                        record.studyDate.day == day.day);
+                    return hasStudied ? '+' : '-';
+                  }).toList();
+
+                  return [
+                    '${student.name} ${student.surname}',
+                    student.schoolNumber ?? '',
+                    studentRecords.length.toString(),
+                    ...dailyStatus,
+                  ];
+                }),
+              ],
+            ),
+          ];
+        },
+      ),
+    );
+
+    return pdf.save();
+  }
+
+  // Add CSV processing function
+  Future<List<Map<String, String>>> _processCSVFile(String csvContent) {
+    try {
+      final lines = const LineSplitter().convert(csvContent);
+      if (lines.isEmpty) return Future.value([]);
+
+      final headers = lines.first.split(',').map((e) => e.trim()).toList();
+      final requiredHeaders = [
+        'username',
+        'password',
+        'name',
+        'surname',
+        'school_number',
+        'class_name',
+        'section',
+        'parent_name',
+        'parent_phone'
+      ];
+
+      // Validate headers
+      for (final required in requiredHeaders) {
+        if (!headers.contains(required)) {
+          throw 'Gerekli sütun eksik: $required';
+        }
+      }
+
+      final students = <Map<String, String>>[];
+      for (var i = 1; i < lines.length; i++) {
+        final values = lines[i].split(',').map((e) => e.trim()).toList();
+        if (values.length != headers.length) continue;
+
+        final student = <String, String>{};
+        for (var j = 0; j < headers.length; j++) {
+          student[headers[j]] = values[j];
+        }
+        students.add(student);
+      }
+
+      return Future.value(students);
+    } catch (e) {
+      return Future.error(e.toString());
+    }
   }
 
   @override
@@ -92,226 +249,184 @@ class AdminScreen extends ConsumerWidget {
                   foregroundColor: Colors.white,
                   child: const Icon(Icons.logout_rounded),
                 ),
+                if (tabController.index == 0) // Sadece Ekle tabında göster
+                  FloatingActionButton.small(
+                    heroTag: 'upload',
+                    onPressed: () async {
+                      try {
+                        // CSV dosyası seç
+                        final input = html.FileUploadInputElement()
+                          ..accept = '.csv';
+                        input.click();
+
+                        await input.onChange.first;
+                        final file = input.files?.first;
+                        if (file == null) return;
+
+                        // Dosyayı oku
+                        final reader = html.FileReader();
+                        reader.readAsText(file);
+                        await reader.onLoad.first;
+
+                        final csvContent = reader.result as String;
+                        final students = await _processCSVFile(csvContent);
+
+                        if (!context.mounted) return;
+
+                        // Yükleme onayı al
+                        AwesomeDialog(
+                          context: context,
+                          dialogType: DialogType.question,
+                          animType: AnimType.scale,
+                          title: 'Öğrenci Yükleme',
+                          desc:
+                              '${students.length} öğrenci bulundu. Yüklemek istiyor musunuz?',
+                          btnCancelText: 'İptal',
+                          btnOkText: 'Yükle',
+                          btnCancelOnPress: () {},
+                          btnOkOnPress: () async {
+                            int success = 0;
+                            int failed = 0;
+
+                            for (final student in students) {
+                              try {
+                                final result = await ref
+                                    .read(adminControllerProvider)
+                                    .createStudent(
+                                      username: student['username'] ?? '',
+                                      password: student['password'] ?? '',
+                                      name: student['name'] ?? '',
+                                      surname: student['surname'] ?? '',
+                                      schoolNumber:
+                                          student['school_number'] ?? '',
+                                      className: student['class_name'] ?? '',
+                                      section: student['section'] ?? '',
+                                      parentName: student['parent_name'] ?? '',
+                                      parentPhone:
+                                          student['parent_phone'] ?? '',
+                                    );
+
+                                if (result) {
+                                  success++;
+                                } else {
+                                  failed++;
+                                }
+                              } catch (e) {
+                                failed++;
+                              }
+                            }
+
+                            if (!context.mounted) return;
+
+                            AwesomeDialog(
+                              context: context,
+                              dialogType: failed == 0
+                                  ? DialogType.success
+                                  : DialogType.warning,
+                              animType: AnimType.scale,
+                              title: 'Yükleme Tamamlandı',
+                              desc: 'Başarılı: $success\nBaşarısız: $failed',
+                              btnOkText: 'Tamam',
+                              btnOkOnPress: () {},
+                            ).show();
+                          },
+                        ).show();
+                      } catch (e) {
+                        if (!context.mounted) return;
+
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Hata oluştu: $e'),
+                            backgroundColor: Colors.red,
+                          ),
+                        );
+                      }
+                    },
+                    backgroundColor: colorScheme.primary,
+                    foregroundColor: Colors.white,
+                    child: const Icon(Icons.upload_rounded),
+                  ),
                 if (tabController.index == 2) // Sadece Raporlar tabında göster
-                  Consumer(
-                    builder: (context, ref, child) {
-                      final selectedClassName =
-                          ref.watch(selectedClassNameProvider);
-                      final selectedSection =
-                          ref.watch(selectedSectionProvider);
-                      final startDate = ref.watch(startDateProvider);
-                      final endDate = ref.watch(endDateProvider);
-                      final students = ref.watch(studentsForReportProvider);
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Consumer(
+                        builder: (context, ref, child) {
+                          final selectedClassName =
+                              ref.watch(selectedClassNameProvider);
+                          final selectedSection =
+                              ref.watch(selectedSectionProvider);
+                          final startDate = ref.watch(startDateProvider);
+                          final endDate = ref.watch(endDateProvider);
+                          final students = ref.watch(studentsForReportProvider);
 
-                      return students.when(
-                        data: (studentList) => FloatingActionButton.small(
-                          heroTag: 'excel',
-                          onPressed: studentList.isEmpty
-                              ? null
-                              : () async {
-                                  try {
-                                    // Android 13+ için izin kontrolü
-                                    if (Platform.isAndroid) {
-                                      final storageStatus =
-                                          await Permission.storage.status;
-                                      final photosStatus =
-                                          await Permission.photos.status;
+                          return students.when(
+                            data: (studentList) => FloatingActionButton.small(
+                              heroTag: 'pdf',
+                              onPressed: studentList.isEmpty
+                                  ? null
+                                  : () async {
+                                      try {
+                                        final records = await ref.read(
+                                            studyRecordsForReportProvider
+                                                .future);
 
-                                      if (storageStatus.isDenied ||
-                                          photosStatus.isDenied) {
-                                        // İzinleri iste
-                                        Map<Permission, PermissionStatus>
-                                            statuses = await [
-                                          Permission.storage,
-                                          Permission.photos,
-                                        ].request();
+                                        final pdfBytes =
+                                            await _generateStudentReport(
+                                          students: studentList,
+                                          records: records,
+                                          startDate: startDate,
+                                          endDate: endDate,
+                                          className: selectedClassName ?? '',
+                                          section: selectedSection ?? '',
+                                        );
 
-                                        bool hasPermission =
-                                            statuses[Permission.storage]!
-                                                    .isGranted ||
-                                                statuses[Permission.photos]!
-                                                    .isGranted;
+                                        final blob = html.Blob(
+                                            [pdfBytes], 'application/pdf');
+                                        final url =
+                                            html.Url.createObjectUrlFromBlob(
+                                                blob);
+                                        final anchor =
+                                            html.AnchorElement(href: url)
+                                              ..setAttribute('download',
+                                                  '${selectedClassName}_${selectedSection}_${DateFormat('yyyyMMdd').format(startDate)}-${DateFormat('yyyyMMdd').format(endDate)}.pdf')
+                                              ..click();
+                                        html.Url.revokeObjectUrl(url);
 
-                                        if (!hasPermission) {
-                                          if (context.mounted) {
-                                            ScaffoldMessenger.of(context)
-                                                .showSnackBar(
-                                              const SnackBar(
-                                                content: Text(
-                                                    'Depolama izni gerekli'),
-                                                backgroundColor: Colors.red,
-                                              ),
-                                            );
-                                          }
-                                          return;
+                                        if (context.mounted) {
+                                          ScaffoldMessenger.of(context)
+                                              .showSnackBar(
+                                            const SnackBar(
+                                              content: Text(
+                                                  'PDF başarıyla indirildi'),
+                                              backgroundColor: Colors.green,
+                                            ),
+                                          );
+                                        }
+                                      } catch (e) {
+                                        if (context.mounted) {
+                                          ScaffoldMessenger.of(context)
+                                              .showSnackBar(
+                                            SnackBar(
+                                              content: Text('Hata oluştu: $e'),
+                                              backgroundColor: Colors.red,
+                                            ),
+                                          );
                                         }
                                       }
-                                    }
-
-                                    final excel = Excel.createExcel();
-                                    final sheet =
-                                        excel[excel.getDefaultSheet()!];
-
-                                    // Başlıklar
-                                    sheet
-                                        .cell(CellIndex.indexByColumnRow(
-                                            columnIndex: 0, rowIndex: 0))
-                                        .value = TextCellValue('Ad');
-                                    sheet
-                                        .cell(CellIndex.indexByColumnRow(
-                                            columnIndex: 1, rowIndex: 0))
-                                        .value = TextCellValue('Soyad');
-                                    sheet
-                                        .cell(CellIndex.indexByColumnRow(
-                                            columnIndex: 2, rowIndex: 0))
-                                        .value = TextCellValue('Okul No');
-                                    sheet
-                                        .cell(CellIndex.indexByColumnRow(
-                                            columnIndex: 3, rowIndex: 0))
-                                        .value = TextCellValue('Sınıf');
-                                    sheet
-                                        .cell(CellIndex.indexByColumnRow(
-                                            columnIndex: 4, rowIndex: 0))
-                                        .value = TextCellValue('Şube');
-                                    sheet
-                                            .cell(CellIndex.indexByColumnRow(
-                                                columnIndex: 5, rowIndex: 0))
-                                            .value =
-                                        TextCellValue('Toplam Çalışma');
-
-                                    // Tarih aralığı başlıkları
-                                    final days =
-                                        _getDaysBetween(startDate, endDate);
-                                    for (var i = 0; i < days.length; i++) {
-                                      sheet
-                                              .cell(CellIndex.indexByColumnRow(
-                                                  columnIndex: i + 6,
-                                                  rowIndex: 0))
-                                              .value =
-                                          TextCellValue(DateFormat('dd.MM.yyyy')
-                                              .format(days[i]));
-                                    }
-
-                                    // Veriler
-                                    for (var i = 0;
-                                        i < studentList.length;
-                                        i++) {
-                                      final student = studentList[i];
-                                      sheet
-                                              .cell(CellIndex.indexByColumnRow(
-                                                  columnIndex: 0,
-                                                  rowIndex: i + 1))
-                                              .value =
-                                          TextCellValue(student.name ?? '');
-                                      sheet
-                                              .cell(CellIndex.indexByColumnRow(
-                                                  columnIndex: 1,
-                                                  rowIndex: i + 1))
-                                              .value =
-                                          TextCellValue(student.surname ?? '');
-                                      sheet
-                                              .cell(CellIndex.indexByColumnRow(
-                                                  columnIndex: 2,
-                                                  rowIndex: i + 1))
-                                              .value =
-                                          TextCellValue(
-                                              student.schoolNumber ?? '');
-                                      sheet
-                                              .cell(CellIndex.indexByColumnRow(
-                                                  columnIndex: 3,
-                                                  rowIndex: i + 1))
-                                              .value =
-                                          TextCellValue(
-                                              student.className ?? '');
-                                      sheet
-                                              .cell(CellIndex.indexByColumnRow(
-                                                  columnIndex: 4,
-                                                  rowIndex: i + 1))
-                                              .value =
-                                          TextCellValue(student.section ?? '');
-
-                                      // Çalışma kayıtları
-                                      final records = await ref.read(
-                                          studyRecordsForReportProvider.future);
-                                      final studentRecords = records
-                                          .where(
-                                              (r) => r.studentId == student.id)
-                                          .toList();
-
-                                      // Toplam çalışma günü
-                                      sheet
-                                              .cell(CellIndex.indexByColumnRow(
-                                                  columnIndex: 5,
-                                                  rowIndex: i + 1))
-                                              .value =
-                                          IntCellValue(studentRecords.length);
-
-                                      // Her gün için çalışma durumu
-                                      for (var j = 0; j < days.length; j++) {
-                                        final day = days[j];
-                                        final hasStudied = studentRecords.any(
-                                            (record) =>
-                                                record.studyDate.year ==
-                                                    day.year &&
-                                                record.studyDate.month ==
-                                                    day.month &&
-                                                record.studyDate.day ==
-                                                    day.day);
-
-                                        sheet
-                                                .cell(
-                                                    CellIndex.indexByColumnRow(
-                                                        columnIndex: j + 6,
-                                                        rowIndex: i + 1))
-                                                .value =
-                                            TextCellValue(
-                                                hasStudied ? '✓' : '✗');
-                                      }
-                                    }
-
-                                    final fileBytes = excel.save();
-                                    if (fileBytes != null) {
-                                      final fileName =
-                                          '${selectedClassName}_${selectedSection}_${DateFormat('yyyyMMdd').format(startDate)}-${DateFormat('yyyyMMdd').format(endDate)}.xlsx';
-
-                                      // Doğrudan Downloads klasörüne kaydet
-                                      final downloadsPath =
-                                          '/storage/emulated/0/Download';
-                                      final file =
-                                          File('$downloadsPath/$fileName');
-                                      await file.writeAsBytes(fileBytes);
-
-                                      if (context.mounted) {
-                                        ScaffoldMessenger.of(context)
-                                            .showSnackBar(
-                                          SnackBar(
-                                            content: Text(
-                                                'Excel dosyası kaydedildi: ${file.path}'),
-                                            backgroundColor: Colors.green,
-                                          ),
-                                        );
-                                      }
-                                    }
-                                  } catch (e) {
-                                    if (context.mounted) {
-                                      ScaffoldMessenger.of(context)
-                                          .showSnackBar(
-                                        SnackBar(
-                                          content: Text('Hata oluştu: $e'),
-                                          backgroundColor: Colors.red,
-                                        ),
-                                      );
-                                    }
-                                  }
-                                },
-                          backgroundColor: colorScheme.primary,
-                          foregroundColor: Colors.white,
-                          child: const Icon(Icons.download_rounded),
-                        ),
-                        loading: () => const SizedBox.shrink(),
-                        error: (_, __) => const SizedBox.shrink(),
-                      );
-                    },
+                                    },
+                              backgroundColor: colorScheme.primary,
+                              foregroundColor: Colors.white,
+                              child: const Icon(Icons.picture_as_pdf_rounded),
+                            ),
+                            loading: () => const SizedBox.shrink(),
+                            error: (_, __) => const SizedBox.shrink(),
+                          );
+                        },
+                      ),
+                      const SizedBox(width: 8),
+                      // Existing CSV export button...
+                    ],
                   ),
               ],
             ),
@@ -695,14 +810,8 @@ class _ReportsTab extends ConsumerWidget {
     DateTime startDate,
     DateTime endDate,
   ) {
-    print('Çalışma kayıtları işleniyor...');
-    print('Öğrenci sayısı: ${students.length}');
-    print('Kayıt sayısı: ${records.length}');
-
     final studyMap = <String, Map<DateTime, bool>>{};
     final days = _getDaysBetween(startDate, endDate);
-
-    print('Tarih aralığındaki gün sayısı: ${days.length}');
 
     // Initialize all days as not studied
     for (final student in students) {
@@ -720,29 +829,22 @@ class _ReportsTab extends ConsumerWidget {
         record.studyDate.day,
       );
 
-      print('Kayıt - Öğrenci: ${record.studentId}, Tarih: $dayStart');
-
       if (studyMap[record.studentId]?.containsKey(dayStart) ?? false) {
         studyMap[record.studentId]![dayStart] = true;
-        print('Çalışma işaretlendi: ${record.studentId} - $dayStart');
       }
     }
 
     final result = students.where((s) => s.id != null).map((student) {
       final studentId = student.id!;
-      final status = StudentStudyStatus(
+      return StudentStudyStatus(
         studentId: studentId,
         name: student.name ?? '',
         surname: student.surname ?? '',
         schoolNumber: student.schoolNumber ?? '',
         studyDays: studyMap[studentId] ?? {},
       );
-      print(
-          'Öğrenci $studentId - Toplam çalışma: ${status.getTotalStudyDays()}');
-      return status;
     }).toList();
 
-    print('İşlenen öğrenci sayısı: ${result.length}');
     return result;
   }
 
